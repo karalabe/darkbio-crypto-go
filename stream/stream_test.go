@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 //
-// Source: https://github.com/FiloSottile/age/blob/main/internal/stream/stream_test.go
+// Source: https://github.com/FiloSottile/age/blob/v1.3.1/internal/stream/stream_test.go
 
 package stream_test
 
