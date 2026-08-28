@@ -112,6 +112,10 @@ func ParseSecretKeyDER(der []byte) (*SecretKey, error) {
 	if !info.Algorithm.Algorithm.Equal(OID) {
 		return nil, ErrUnexpectedAlgorithm
 	}
+	// Ensure no algorithm parameters are present, none are allowed
+	if len(info.Algorithm.Parameters.FullBytes) != 0 {
+		return nil, fmt.Errorf("%w: unexpected algorithm parameters", ErrMalformedKey)
+	}
 	if len(info.PrivateKey) != SecretKeySize {
 		return nil, fmt.Errorf("%w: private key must be 32 bytes", ErrMalformedKey)
 	}
@@ -282,6 +286,10 @@ func ParsePublicKeyDER(der []byte) (*PublicKey, error) {
 	// Ensure the algorithm OID matches X-Wing and extract the actual public key
 	if !info.Algorithm.Algorithm.Equal(OID) {
 		return nil, ErrUnexpectedAlgorithm
+	}
+	// Ensure no algorithm parameters are present, none are allowed
+	if len(info.Algorithm.Parameters.FullBytes) != 0 {
+		return nil, fmt.Errorf("%w: unexpected algorithm parameters", ErrMalformedKey)
 	}
 	keyBytes := info.SubjectPublicKey.Bytes
 	if len(keyBytes) != PublicKeySize {

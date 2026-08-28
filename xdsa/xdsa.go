@@ -119,6 +119,10 @@ func ParseSecretKeyDER(der []byte) (*SecretKey, error) {
 	if !info.Algorithm.Algorithm.Equal(OID) {
 		return nil, ErrUnexpectedAlgorithm
 	}
+	// Ensure no algorithm parameters are present, none are allowed
+	if len(info.Algorithm.Parameters.FullBytes) != 0 {
+		return nil, fmt.Errorf("%w: unexpected algorithm parameters", ErrMalformedKey)
+	}
 	if len(info.PrivateKey) != 64 {
 		return nil, fmt.Errorf("%w: composite private key must be 64 bytes", ErrMalformedKey)
 	}
@@ -313,6 +317,10 @@ func ParsePublicKeyDER(der []byte) (*PublicKey, error) {
 	}
 	if !info.Algorithm.Algorithm.Equal(OID) {
 		return nil, ErrUnexpectedAlgorithm
+	}
+	// Ensure no algorithm parameters are present, none are allowed
+	if len(info.Algorithm.Parameters.FullBytes) != 0 {
+		return nil, fmt.Errorf("%w: unexpected algorithm parameters", ErrMalformedKey)
 	}
 	keyBytes := info.SubjectPublicKey.Bytes
 	if len(keyBytes) != PublicKeySize {

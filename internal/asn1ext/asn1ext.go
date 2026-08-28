@@ -60,13 +60,9 @@ func ParsePKCS8PrivateKey(der []byte) (*PKCS8PrivateKey, error) {
 	if !algSeq.ReadASN1ObjectIdentifier(&oid) {
 		return nil, errors.New("asn1ext: invalid algorithm OID")
 	}
-	// Read optional parameters (ignore them, but consume if present)
-	var params cryptobyte.String
-	algSeq.ReadOptionalASN1(&params, nil, cbasn1.Tag(0).ContextSpecific())
-	if !algSeq.Empty() {
-		// Parameters might be other types, just skip remaining
-		algSeq.SkipASN1(0)
-	}
+	// Retain any remaining algorithm parameters raw for callers to police
+	params := asn1.RawValue{FullBytes: []byte(algSeq)}
+
 	// Extract the raw private key bytes from the OCTET STRING
 	var keyBytes cryptobyte.String
 	if !inner.ReadASN1(&keyBytes, cbasn1.OCTET_STRING) {
@@ -79,7 +75,8 @@ func ParsePKCS8PrivateKey(der []byte) (*PKCS8PrivateKey, error) {
 	return &PKCS8PrivateKey{
 		Version: version,
 		Algorithm: pkix.AlgorithmIdentifier{
-			Algorithm: oid,
+			Algorithm:  oid,
+			Parameters: params,
 		},
 		PrivateKey: keyBytes,
 	}, nil
@@ -113,6 +110,9 @@ func ParseSubjectPublicKeyInfo(der []byte) (*SubjectPublicKeyInfo, error) {
 	if !algSeq.ReadASN1ObjectIdentifier(&oid) {
 		return nil, errors.New("asn1ext: invalid algorithm OID")
 	}
+	// Retain any remaining algorithm parameters raw for callers to police
+	params := asn1.RawValue{FullBytes: []byte(algSeq)}
+
 	// Parse the BIT STRING containing the public key
 	var bitString cryptobyte.String
 	if !inner.ReadASN1(&bitString, cbasn1.BIT_STRING) {
@@ -128,7 +128,8 @@ func ParseSubjectPublicKeyInfo(der []byte) (*SubjectPublicKeyInfo, error) {
 	paddingBits := int(bitString[0])
 	return &SubjectPublicKeyInfo{
 		Algorithm: pkix.AlgorithmIdentifier{
-			Algorithm: oid,
+			Algorithm:  oid,
+			Parameters: params,
 		},
 		SubjectPublicKey: asn1.BitString{
 			Bytes:     bitString[1:],
