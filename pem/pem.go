@@ -11,12 +11,25 @@ import (
 	"bytes"
 	"encoding/base64"
 	"errors"
+	"fmt"
+	"unicode/utf8"
 )
 
 var (
 	pemHeader = []byte("-----BEGIN ")
 	pemFooter = []byte("-----END ")
 	pemEnding = []byte("-----")
+)
+
+var (
+	ErrMissingHeader      = errors.New("pem: missing PEM header")
+	ErrMalformedHeader    = errors.New("pem: malformed PEM header")
+	ErrEmptyBlockType     = errors.New("pem: empty PEM block type")
+	ErrMalformedBlockType = errors.New("pem: malformed PEM block type")
+	ErrMissingFooter      = errors.New("pem: missing PEM footer")
+	ErrTrailingData       = errors.New("pem: trailing data after PEM block")
+	ErrMalformedBody      = errors.New("pem: malformed PEM body")
+	ErrMalformedPayload   = errors.New("pem: malformed base64 payload")
 )
 
 // Decode decodes a single PEM block with strict validation.
@@ -31,12 +44,12 @@ var (
 func Decode(data []byte) (kind string, blob []byte, err error) {
 	// Must start with header immediately (no leading whitespace)
 	if !bytes.HasPrefix(data, pemHeader) {
-		return "", nil, errors.New("pemext: missing PEM header")
+		return "", nil, ErrMissingHeader
 	}
 	// Find the end of header line (first \n)
 	headerEnd := bytes.Index(data, []byte("\n"))
 	if headerEnd < 0 {
-		return "", nil, errors.New("pemext: incomplete PEM header")
+		return "", nil, fmt.Errorf("%w: incomplete header line", ErrMalformedHeader)
 	}
 	// Detect line ending style from first line
 	var lineEnding []byte
@@ -52,11 +65,14 @@ func Decode(data []byte) (kind string, blob []byte, err error) {
 	}
 	// Parse the block type from the header
 	if !bytes.HasPrefix(header, pemHeader) || !bytes.HasSuffix(header, pemEnding) {
-		return "", nil, errors.New("pemext: malformed PEM header")
+		return "", nil, fmt.Errorf("%w: unterminated block type", ErrMalformedHeader)
 	}
 	blockType := string(header[len(pemHeader) : len(header)-len(pemEnding)])
 	if len(blockType) == 0 {
-		return "", nil, errors.New("pemext: empty PEM block type")
+		return "", nil, ErrEmptyBlockType
+	}
+	if !utf8.ValidString(blockType) {
+		return "", nil, ErrMalformedBlockType
 	}
 	// Build expected footer
 	footer := append(append(append([]byte(nil), pemFooter...), blockType...), pemEnding...)
@@ -64,7 +80,7 @@ func Decode(data []byte) (kind string, blob []byte, err error) {
 	// Find the footer
 	footerIdx := bytes.Index(data[headerEnd+1:], footer)
 	if footerIdx < 0 {
-		return "", nil, errors.New("pemext: missing PEM footer")
+		return "", nil, ErrMissingFooter
 	}
 	footerStart := headerEnd + 1 + footerIdx
 	footerEnd := footerStart + len(footer)
@@ -73,7 +89,7 @@ func Decode(data []byte) (kind string, blob []byte, err error) {
 	rest := data[footerEnd:]
 	if len(rest) > 0 {
 		if !bytes.Equal(rest, lineEnding) {
-			return "", nil, errors.New("pemext: trailing data after PEM block")
+			return "", nil, ErrTrailingData
 		}
 	}
 	// Extract body (between header and footer)
@@ -81,21 +97,21 @@ func Decode(data []byte) (kind string, blob []byte, err error) {
 
 	// Body must end with the line ending (the line before footer)
 	if len(body) == 0 {
-		return "", nil, errors.New("pemext: empty PEM body")
+		return "", nil, fmt.Errorf("%w: empty body", ErrMalformedBody)
 	}
 	if !bytes.HasSuffix(body, lineEnding) {
-		return "", nil, errors.New("pemext: body must end with newline before footer")
+		return "", nil, fmt.Errorf("%w: missing newline before footer", ErrMalformedBody)
 	}
 	body = body[:len(body)-len(lineEnding)]
 
 	// Strip line endings and ensure no whitespace remains
 	b64 := bytes.ReplaceAll(body, lineEnding, nil)
 	if bytes.ContainsAny(b64, "\r\n") {
-		return "", nil, errors.New("pemext: invalid characters in base64 data")
+		return "", nil, fmt.Errorf("%w: stray line endings", ErrMalformedPayload)
 	}
 	decoded, err := base64.StdEncoding.Strict().DecodeString(string(b64))
 	if err != nil {
-		return "", nil, errors.New("pemext: invalid base64 encoding")
+		return "", nil, fmt.Errorf("%w: %v", ErrMalformedPayload, err)
 	}
 	return blockType, decoded, nil
 }

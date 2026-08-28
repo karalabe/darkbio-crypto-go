@@ -18,6 +18,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"math/big"
 
 	"github.com/dark-bio/crypto-go/cbor"
@@ -39,6 +40,13 @@ const (
 
 	// FingerprintSize is the size of a fingerprint in bytes.
 	FingerprintSize = 32
+)
+
+var (
+	ErrUnexpectedPemTag    = errors.New("rsa: invalid PEM tag")
+	ErrUnexpectedAlgorithm = errors.New("rsa: not an RSA key")
+	ErrMalformedKey        = errors.New("rsa: malformed key")
+	ErrInvalidSignature    = errors.New("rsa: signature verification failed")
 )
 
 // SecretKey contains a 2048-bit RSA private key usable for signing, with SHA256
@@ -70,13 +78,13 @@ func ParseSecretKey(b [SecretKeySize]byte) (*SecretKey, error) {
 
 	// The modulus must be exactly 2048 bits
 	if n.BitLen() != 2048 {
-		return nil, errors.New("rsa: modulus must be 2048 bits")
+		return nil, fmt.Errorf("%w: modulus must be 2048 bits", ErrMalformedKey)
 	}
 	// Whilst the RSA algorithm permits different exponents, every modern
 	// system only ever uses 65537 and most also enforce this. Might as
 	// well do the same.
 	if e.Cmp(big.NewInt(65537)) != 0 {
-		return nil, errors.New("rsa: exponent must be 65537")
+		return nil, fmt.Errorf("%w: exponent must be 65537", ErrMalformedKey)
 	}
 	// Construct the actual private key
 	key := &rsa.PrivateKey{
@@ -88,7 +96,7 @@ func ParseSecretKey(b [SecretKeySize]byte) (*SecretKey, error) {
 		Primes: []*big.Int{p, q},
 	}
 	if err := key.Validate(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrMalformedKey, err)
 	}
 	key.Precompute()
 
@@ -109,25 +117,25 @@ func MustParseSecretKey(b [SecretKeySize]byte) *SecretKey {
 func ParseSecretKeyDER(der []byte) (*SecretKey, error) {
 	key, err := x509.ParsePKCS8PrivateKey(der)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrMalformedKey, err)
 	}
 	rsaKey, ok := key.(*rsa.PrivateKey)
 	if !ok {
-		return nil, errors.New("rsa: not an RSA private key")
+		return nil, ErrUnexpectedAlgorithm
 	}
 	// The modulus must be exactly 2048 bits
 	if rsaKey.N.BitLen() != 2048 {
-		return nil, errors.New("rsa: modulus must be 2048 bits")
+		return nil, fmt.Errorf("%w: modulus must be 2048 bits", ErrMalformedKey)
 	}
 	// The modulus must be odd (product of two odd primes)
 	if rsaKey.N.Bit(0) == 0 {
-		return nil, errors.New("rsa: modulus must be odd")
+		return nil, fmt.Errorf("%w: modulus must be odd", ErrMalformedKey)
 	}
 	// Whilst the RSA algorithm permits different exponents, every modern
 	// system only ever uses 65537 and most also enforce this. Might as
 	// well do the same.
 	if rsaKey.E != 65537 {
-		return nil, errors.New("rsa: exponent must be 65537")
+		return nil, fmt.Errorf("%w: exponent must be 65537", ErrMalformedKey)
 	}
 	// Go's ASN1 parser permits unused trailing bytes, which may end up with a
 	// weird interplay with the optional RSA CRT parameters (junk ignored). We
@@ -135,10 +143,10 @@ func ParseSecretKeyDER(der []byte) (*SecretKey, error) {
 	// matching or not.
 	recoded, err := x509.MarshalPKCS8PrivateKey(rsaKey)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrMalformedKey, err)
 	}
 	if !bytes.Equal(recoded, der) {
-		return nil, errors.New("rsa: non-canonical DER encoding")
+		return nil, fmt.Errorf("%w: non-canonical DER encoding", ErrMalformedKey)
 	}
 	return &SecretKey{inner: rsaKey}, nil
 }
@@ -160,7 +168,7 @@ func ParseSecretKeyPEM(s string) (*SecretKey, error) {
 		return nil, err
 	}
 	if kind != "PRIVATE KEY" {
-		return nil, errors.New("rsa: invalid PEM type: " + kind)
+		return nil, fmt.Errorf("%w %s", ErrUnexpectedPemTag, kind)
 	}
 	return ParseSecretKeyDER(blob)
 }
@@ -248,21 +256,21 @@ func ParsePublicKey(b [PublicKeySize]byte) (*PublicKey, error) {
 
 	// Validate that modulus and exponent are valid
 	if n.Sign() <= 0 {
-		return nil, errors.New("rsa: invalid modulus")
+		return nil, fmt.Errorf("%w: invalid modulus", ErrMalformedKey)
 	}
 	// The modulus must be exactly 2048 bits
 	if n.BitLen() != 2048 {
-		return nil, errors.New("rsa: modulus must be 2048 bits")
+		return nil, fmt.Errorf("%w: modulus must be 2048 bits", ErrMalformedKey)
 	}
 	// The modulus must be odd (product of two odd primes)
 	if n.Bit(0) == 0 {
-		return nil, errors.New("rsa: modulus must be odd")
+		return nil, fmt.Errorf("%w: modulus must be odd", ErrMalformedKey)
 	}
 	// Whilst the RSA algorithm permits different exponents, every modern
 	// system only ever uses 65537 and most also enforce this. Might as
 	// well do the same.
 	if e.Cmp(big.NewInt(65537)) != 0 {
-		return nil, errors.New("rsa: exponent must be 65537")
+		return nil, fmt.Errorf("%w: exponent must be 65537", ErrMalformedKey)
 	}
 	return &PublicKey{
 		inner: &rsa.PublicKey{
@@ -286,25 +294,25 @@ func MustParsePublicKey(b [PublicKeySize]byte) *PublicKey {
 func ParsePublicKeyDER(der []byte) (*PublicKey, error) {
 	key, err := x509.ParsePKIXPublicKey(der)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrMalformedKey, err)
 	}
 	rsaKey, ok := key.(*rsa.PublicKey)
 	if !ok {
-		return nil, errors.New("rsa: not an RSA public key")
+		return nil, ErrUnexpectedAlgorithm
 	}
 	// The modulus must be exactly 2048 bits
 	if rsaKey.N.BitLen() != 2048 {
-		return nil, errors.New("rsa: modulus must be 2048 bits")
+		return nil, fmt.Errorf("%w: modulus must be 2048 bits", ErrMalformedKey)
 	}
 	// The modulus must be odd (product of two odd primes)
 	if rsaKey.N.Bit(0) == 0 {
-		return nil, errors.New("rsa: modulus must be odd")
+		return nil, fmt.Errorf("%w: modulus must be odd", ErrMalformedKey)
 	}
 	// Whilst the RSA algorithm permits different exponents, every modern
 	// system only ever uses 65537 and most also enforce this. Might as
 	// well do the same.
 	if rsaKey.E != 65537 {
-		return nil, errors.New("rsa: exponent must be 65537")
+		return nil, fmt.Errorf("%w: exponent must be 65537", ErrMalformedKey)
 	}
 	return &PublicKey{inner: rsaKey}, nil
 }
@@ -326,7 +334,7 @@ func ParsePublicKeyPEM(s string) (*PublicKey, error) {
 		return nil, err
 	}
 	if kind != "PUBLIC KEY" {
-		return nil, errors.New("rsa: invalid PEM type: " + kind)
+		return nil, fmt.Errorf("%w %s", ErrUnexpectedPemTag, kind)
 	}
 	return ParsePublicKeyDER(blob)
 }
@@ -428,12 +436,18 @@ func (k *PublicKey) UnmarshalCBOR(dec *cbor.Decoder) error {
 // Verify verifies a digital signature.
 func (k *PublicKey) Verify(message []byte, sig *Signature) error {
 	hash := sha256.Sum256(message)
-	return rsa.VerifyPKCS1v15(k.inner, crypto.SHA256, hash[:], sig[:])
+	if rsa.VerifyPKCS1v15(k.inner, crypto.SHA256, hash[:], sig[:]) != nil {
+		return ErrInvalidSignature
+	}
+	return nil
 }
 
 // VerifyHash verifies a digital signature on an already hashed message.
 func (k *PublicKey) VerifyHash(hash []byte, sig *Signature) error {
-	return rsa.VerifyPKCS1v15(k.inner, crypto.SHA256, hash, sig[:])
+	if rsa.VerifyPKCS1v15(k.inner, crypto.SHA256, hash, sig[:]) != nil {
+		return ErrInvalidSignature
+	}
+	return nil
 }
 
 // Signature contains an RSA-2048 signature.

@@ -17,6 +17,7 @@ import (
 	"encoding/asn1"
 	"encoding/base64"
 	"errors"
+	"fmt"
 
 	"github.com/dark-bio/crypto-go/cbor"
 	"github.com/dark-bio/crypto-go/internal/asn1ext"
@@ -48,6 +49,15 @@ const (
 
 // OID is the ASN.1 object identifier for X-Wing.
 var OID = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 62253, 25722}
+
+var (
+	ErrUnexpectedPemTag    = errors.New("xhpke: invalid PEM tag")
+	ErrUnexpectedAlgorithm = errors.New("xhpke: not an X-Wing key")
+	ErrMalformedKey        = errors.New("xhpke: malformed key")
+	ErrTrailingData        = errors.New("xhpke: trailing data in key encoding")
+	ErrSealFailed          = errors.New("xhpke: sealing failed")
+	ErrOpenFailed          = errors.New("xhpke: opening failed")
+)
 
 // SecretKey contains an X-Wing private key for decrypting HPKE messages.
 type SecretKey struct {
@@ -90,17 +100,20 @@ func ParseSecretKeyDER(der []byte) (*SecretKey, error) {
 	// Parse the DER encoded container
 	info, err := asn1ext.ParsePKCS8PrivateKey(der)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, asn1ext.ErrTrailingData) {
+			return nil, ErrTrailingData
+		}
+		return nil, fmt.Errorf("%w: %v", ErrMalformedKey, err)
 	}
 	if info.Version != 0 {
-		return nil, errors.New("xhpke: unsupported version")
+		return nil, fmt.Errorf("%w: unsupported PKCS#8 version", ErrMalformedKey)
 	}
 	// Ensure the algorithm OID matches X-Wing and extract the actual private key
 	if !info.Algorithm.Algorithm.Equal(OID) {
-		return nil, errors.New("xhpke: not an X-Wing private key")
+		return nil, ErrUnexpectedAlgorithm
 	}
 	if len(info.PrivateKey) != SecretKeySize {
-		return nil, errors.New("xhpke: private key must be 32 bytes")
+		return nil, fmt.Errorf("%w: private key must be 32 bytes", ErrMalformedKey)
 	}
 	var seed [SecretKeySize]byte
 	copy(seed[:], info.PrivateKey)
@@ -124,7 +137,7 @@ func ParseSecretKeyPEM(s string) (*SecretKey, error) {
 		return nil, err
 	}
 	if kind != "PRIVATE KEY" {
-		return nil, errors.New("xhpke: invalid PEM type: " + kind)
+		return nil, fmt.Errorf("%w %s", ErrUnexpectedPemTag, kind)
 	}
 	return ParseSecretKeyDER(blob)
 }
@@ -199,10 +212,14 @@ func (k *SecretKey) Open(sessionKey *[EncapKeySize]byte, msgToOpen, msgToAuth, d
 		info,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrOpenFailed, err)
 	}
 	// Verify the construct and decrypt the message if everything checks out
-	return recipient.Open(msgToAuth, msgToOpen)
+	blob, err := recipient.Open(msgToAuth, msgToOpen)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrOpenFailed, err)
+	}
+	return blob, nil
 }
 
 // NewReceiver creates an HPKE receiver context for multi-message decryption
@@ -223,7 +240,7 @@ func (k *SecretKey) NewReceiver(sessionKey *[EncapKeySize]byte, domain []byte) (
 		info,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrOpenFailed, err)
 	}
 	return &Receiver{inner: recipient}, nil
 }
@@ -237,7 +254,7 @@ type PublicKey struct {
 func ParsePublicKey(b [PublicKeySize]byte) (*PublicKey, error) {
 	inner, err := hpke.MLKEM768X25519().NewPublicKey(b[:])
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrMalformedKey, err)
 	}
 	return &PublicKey{inner: inner}, nil
 }
@@ -257,18 +274,21 @@ func ParsePublicKeyDER(der []byte) (*PublicKey, error) {
 	// Parse the DER encoded container
 	info, err := asn1ext.ParseSubjectPublicKeyInfo(der)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, asn1ext.ErrTrailingData) {
+			return nil, ErrTrailingData
+		}
+		return nil, fmt.Errorf("%w: %v", ErrMalformedKey, err)
 	}
 	// Ensure the algorithm OID matches X-Wing and extract the actual public key
 	if !info.Algorithm.Algorithm.Equal(OID) {
-		return nil, errors.New("xhpke: not an X-Wing public key")
+		return nil, ErrUnexpectedAlgorithm
 	}
 	keyBytes := info.SubjectPublicKey.Bytes
 	if len(keyBytes) != PublicKeySize {
-		return nil, errors.New("xhpke: public key must be 1216 bytes")
+		return nil, fmt.Errorf("%w: public key must be 1216 bytes", ErrMalformedKey)
 	}
 	if info.SubjectPublicKey.BitLength != PublicKeySize*8 {
-		return nil, errors.New("xhpke: public key BIT STRING must be byte-aligned")
+		return nil, fmt.Errorf("%w: public key BIT STRING must be byte-aligned", ErrMalformedKey)
 	}
 	// Public key extracted, return the wrapper
 	var b [PublicKeySize]byte
@@ -293,7 +313,7 @@ func ParsePublicKeyPEM(s string) (*PublicKey, error) {
 		return nil, err
 	}
 	if kind != "PUBLIC KEY" {
-		return nil, errors.New("xhpke: invalid PEM type: " + kind)
+		return nil, fmt.Errorf("%w %s", ErrUnexpectedPemTag, kind)
 	}
 	return ParsePublicKeyDER(blob)
 }
@@ -435,12 +455,12 @@ func (k *PublicKey) Seal(msgToSeal, msgToAuth, domain []byte) ([EncapKeySize]byt
 		info,
 	)
 	if err != nil {
-		return [EncapKeySize]byte{}, nil, err
+		return [EncapKeySize]byte{}, nil, fmt.Errorf("%w: %v", ErrSealFailed, err)
 	}
 	// Encrypt the messages and seal all the crypto details into a nice box
 	enc, err := sender.Seal(msgToAuth, msgToSeal)
 	if err != nil {
-		return [EncapKeySize]byte{}, nil, err
+		return [EncapKeySize]byte{}, nil, fmt.Errorf("%w: %v", ErrSealFailed, err)
 	}
 	var sessionKey [EncapKeySize]byte
 	copy(sessionKey[:], encapKey)
@@ -467,7 +487,7 @@ func (k *PublicKey) NewSender(domain []byte) (*Sender, [EncapKeySize]byte, error
 		info,
 	)
 	if err != nil {
-		return nil, [EncapKeySize]byte{}, err
+		return nil, [EncapKeySize]byte{}, fmt.Errorf("%w: %v", ErrSealFailed, err)
 	}
 	var encapKey [EncapKeySize]byte
 	copy(encapKey[:], encapKeyBytes)
@@ -486,7 +506,11 @@ type Receiver struct {
 
 // Open decrypts a message using the next nonce in the sequence.
 func (c *Receiver) Open(msgToOpen, msgToAuth []byte) ([]byte, error) {
-	return c.inner.Open(msgToAuth, msgToOpen)
+	blob, err := c.inner.Open(msgToAuth, msgToOpen)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrOpenFailed, err)
+	}
+	return blob, nil
 }
 
 // Sender wraps an HPKE sender encryption context for multi-message
@@ -501,5 +525,9 @@ type Sender struct {
 
 // Seal encrypts a message using the next nonce in the sequence.
 func (c *Sender) Seal(msgToSeal, msgToAuth []byte) ([]byte, error) {
-	return c.inner.Seal(msgToAuth, msgToSeal)
+	blob, err := c.inner.Seal(msgToAuth, msgToSeal)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrSealFailed, err)
+	}
+	return blob, nil
 }

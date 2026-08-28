@@ -17,6 +17,7 @@ import (
 	"encoding/asn1"
 	"encoding/base64"
 	"errors"
+	"fmt"
 
 	"github.com/dark-bio/crypto-go/cbor"
 	"github.com/dark-bio/crypto-go/eddsa"
@@ -48,6 +49,14 @@ const (
 
 	// FingerprintSize is the size of a fingerprint in bytes.
 	FingerprintSize = 32
+)
+
+var (
+	ErrUnexpectedPemTag    = errors.New("xdsa: invalid PEM tag")
+	ErrUnexpectedAlgorithm = errors.New("xdsa: not a composite ML-DSA-65-Ed25519-SHA512 key")
+	ErrMalformedKey        = errors.New("xdsa: malformed key")
+	ErrTrailingData        = errors.New("xdsa: trailing data in key encoding")
+	ErrInvalidSignature    = errors.New("xdsa: signature verification failed")
 )
 
 // OID is the ASN.1 object identifier for MLDSA65-Ed25519-SHA512.
@@ -99,16 +108,19 @@ func ParseSecretKey(seed [SecretKeySize]byte) *SecretKey {
 func ParseSecretKeyDER(der []byte) (*SecretKey, error) {
 	info, err := asn1ext.ParsePKCS8PrivateKey(der)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, asn1ext.ErrTrailingData) {
+			return nil, ErrTrailingData
+		}
+		return nil, fmt.Errorf("%w: %v", ErrMalformedKey, err)
 	}
 	if info.Version != 0 {
-		return nil, errors.New("xdsa: unsupported version")
+		return nil, fmt.Errorf("%w: unsupported PKCS#8 version", ErrMalformedKey)
 	}
 	if !info.Algorithm.Algorithm.Equal(OID) {
-		return nil, errors.New("xdsa: not a composite ML-DSA-65-Ed25519-SHA512 private key")
+		return nil, ErrUnexpectedAlgorithm
 	}
 	if len(info.PrivateKey) != 64 {
-		return nil, errors.New("xdsa: composite private key must be 64 bytes")
+		return nil, fmt.Errorf("%w: composite private key must be 64 bytes", ErrMalformedKey)
 	}
 	var seed [SecretKeySize]byte
 	copy(seed[:], info.PrivateKey)
@@ -132,7 +144,7 @@ func ParseSecretKeyPEM(s string) (*SecretKey, error) {
 		return nil, err
 	}
 	if kind != "PRIVATE KEY" {
-		return nil, errors.New("xdsa: invalid PEM type: " + kind)
+		return nil, fmt.Errorf("%w %s", ErrUnexpectedPemTag, kind)
 	}
 	return ParseSecretKeyDER(blob)
 }
@@ -272,7 +284,7 @@ func ParsePublicKey(b [PublicKeySize]byte) (*PublicKey, error) {
 
 	edKey, err := eddsa.ParsePublicKey(edBytes)
 	if err != nil {
-		return nil, errors.New("xdsa: invalid Ed25519 public key")
+		return nil, fmt.Errorf("%w: invalid Ed25519 component", ErrMalformedKey)
 	}
 	return &PublicKey{
 		mlKey: mldsa.ParsePublicKey(mlBytes),
@@ -294,17 +306,20 @@ func MustParsePublicKey(b [PublicKeySize]byte) *PublicKey {
 func ParsePublicKeyDER(der []byte) (*PublicKey, error) {
 	info, err := asn1ext.ParseSubjectPublicKeyInfo(der)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, asn1ext.ErrTrailingData) {
+			return nil, ErrTrailingData
+		}
+		return nil, fmt.Errorf("%w: %v", ErrMalformedKey, err)
 	}
 	if !info.Algorithm.Algorithm.Equal(OID) {
-		return nil, errors.New("xdsa: not a composite ML-DSA-65-Ed25519-SHA512 public key")
+		return nil, ErrUnexpectedAlgorithm
 	}
 	keyBytes := info.SubjectPublicKey.Bytes
 	if len(keyBytes) != PublicKeySize {
-		return nil, errors.New("xdsa: composite public key must be 1984 bytes")
+		return nil, fmt.Errorf("%w: composite public key must be 1984 bytes", ErrMalformedKey)
 	}
 	if info.SubjectPublicKey.BitLength != PublicKeySize*8 {
-		return nil, errors.New("xdsa: public key BIT STRING must be byte-aligned")
+		return nil, fmt.Errorf("%w: public key BIT STRING must be byte-aligned", ErrMalformedKey)
 	}
 	var b [PublicKeySize]byte
 	copy(b[:], keyBytes)
@@ -328,7 +343,7 @@ func ParsePublicKeyPEM(s string) (*PublicKey, error) {
 		return nil, err
 	}
 	if kind != "PUBLIC KEY" {
-		return nil, errors.New("xdsa: invalid PEM type: " + kind)
+		return nil, fmt.Errorf("%w %s", ErrUnexpectedPemTag, kind)
 	}
 	return ParsePublicKeyDER(blob)
 }
@@ -438,10 +453,10 @@ func (k *PublicKey) Verify(message []byte, sig *Signature) error {
 
 	// Verify both signatures
 	if err := k.mlKey.Verify(mPrime, []byte(signatureDomain), mlSig); err != nil {
-		return errors.New("xdsa: ML-DSA signature verification failed")
+		return ErrInvalidSignature
 	}
 	if err := k.edKey.Verify(mPrime, edSig); err != nil {
-		return errors.New("xdsa: Ed25519 signature verification failed")
+		return ErrInvalidSignature
 	}
 	return nil
 }
