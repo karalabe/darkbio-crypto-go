@@ -93,6 +93,10 @@ func ParseSecretKeyDER(der []byte) (*SecretKey, error) {
 	if !info.Algorithm.Algorithm.Equal(OID) {
 		return nil, ErrUnexpectedAlgorithm
 	}
+	// Ensure no algorithm parameters are present, none are allowed
+	if len(info.Algorithm.Parameters.FullBytes) != 0 {
+		return nil, fmt.Errorf("%w: unexpected algorithm parameters", ErrMalformedKey)
+	}
 	// Wrap the private key in a SEQUENCE containing:
 	//   - OCTET STRING (32 bytes): seed
 	//   - OCTET STRING (4032 bytes): expanded key
@@ -253,6 +257,10 @@ func ParsePublicKeyDER(der []byte) (*PublicKey, error) {
 	}
 	if !info.Algorithm.Algorithm.Equal(OID) {
 		return nil, ErrUnexpectedAlgorithm
+	}
+	// Ensure no algorithm parameters are present, none are allowed
+	if len(info.Algorithm.Parameters.FullBytes) != 0 {
+		return nil, fmt.Errorf("%w: unexpected algorithm parameters", ErrMalformedKey)
 	}
 	keyBytes := info.SubjectPublicKey.Bytes
 	if len(keyBytes) != PublicKeySize {

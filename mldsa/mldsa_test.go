@@ -8,7 +8,10 @@ package mldsa
 
 import (
 	"bytes"
+	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/hex"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -435,5 +438,61 @@ func TestSignVerify(t *testing.T) {
 		if err := public.Verify(tt.message, []byte("wrong context"), signature); err == nil {
 			t.Fatal("expected verification to fail for wrong context")
 		}
+	}
+}
+
+// Tests that a public key whose algorithm identifier carries parameters is
+// rejected.
+func TestPublicKeyDERRejectsParams(t *testing.T) {
+	// Rebuild a valid public key with injected NULL algorithm parameters
+	der := GenerateKey().PublicKey().MarshalDER()
+
+	var spki struct {
+		Algorithm        pkix.AlgorithmIdentifier
+		SubjectPublicKey asn1.BitString
+	}
+	if _, err := asn1.Unmarshal(der, &spki); err != nil {
+		t.Fatalf("failed to parse valid public key: %v", err)
+	}
+	spki.Algorithm.Parameters = asn1.RawValue{Tag: asn1.TagNull}
+	badDER, err := asn1.Marshal(spki)
+	if err != nil {
+		t.Fatalf("failed to marshal tampered public key: %v", err)
+	}
+	if _, err := ParsePublicKeyDER(badDER); !errors.Is(err, ErrMalformedKey) {
+		t.Fatalf("params-carrying key not rejected: %v", err)
+	}
+}
+
+// Tests that a private key whose algorithm identifier carries parameters is
+// rejected.
+func TestSecretKeyDERRejectsParams(t *testing.T) {
+	// Rebuild a valid private key with NULL algorithm parameters spliced in
+	der := GenerateKey().MarshalDER()
+	long := der[1] == 0x82
+	algidPos := 5
+	if long {
+		algidPos = 7
+	}
+	algidLen := int(der[algidPos+1])
+	oidPos := algidPos + 2
+	oidLen := 2 + int(der[oidPos+1])
+	afterOID := oidPos + oidLen
+
+	bad := make([]byte, 0, len(der)+2)
+	bad = append(bad, der[:afterOID]...)
+	bad = append(bad, 0x05, 0x00)
+	bad = append(bad, der[afterOID:]...)
+	bad[algidPos+1] = byte(algidLen + 2)
+	if long {
+		grown := (int(der[2])<<8 | int(der[3])) + 2
+		bad[2] = byte(grown >> 8)
+		bad[3] = byte(grown & 0xff)
+	} else {
+		bad[1] = byte(int(der[1]) + 2)
+	}
+
+	if _, err := ParseSecretKeyDER(bad); !errors.Is(err, ErrMalformedKey) {
+		t.Fatalf("params-carrying private key not rejected: %v", err)
 	}
 }

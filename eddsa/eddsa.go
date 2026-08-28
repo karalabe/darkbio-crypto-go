@@ -86,6 +86,10 @@ func ParseSecretKeyDER(der []byte) (*SecretKey, error) {
 	if !pkcs8.Algorithm.Algorithm.Equal(OID) {
 		return nil, ErrUnexpectedAlgorithm
 	}
+	// Ensure no algorithm parameters are present, none are allowed
+	if len(pkcs8.Algorithm.Parameters.FullBytes) != 0 {
+		return nil, fmt.Errorf("%w: unexpected algorithm parameters", ErrMalformedKey)
+	}
 	input := cryptobyte.String(pkcs8.PrivateKey)
 	var seed cryptobyte.String
 	if !input.ReadASN1(&seed, cbasn1.OCTET_STRING) || !input.Empty() {
@@ -205,6 +209,10 @@ func ParsePublicKeyDER(der []byte) (*PublicKey, error) {
 	}
 	if !spki.Algorithm.Algorithm.Equal(OID) {
 		return nil, ErrUnexpectedAlgorithm
+	}
+	// Ensure no algorithm parameters are present, none are allowed
+	if len(spki.Algorithm.Parameters.FullBytes) != 0 {
+		return nil, fmt.Errorf("%w: unexpected algorithm parameters", ErrMalformedKey)
 	}
 	if spki.SubjectPublicKey.BitLength != PublicKeySize*8 {
 		return nil, fmt.Errorf("%w: invalid public key length", ErrMalformedKey)
