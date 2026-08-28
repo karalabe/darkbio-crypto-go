@@ -16,6 +16,7 @@ import (
 	"encoding/asn1"
 	"encoding/base64"
 	"errors"
+	"fmt"
 
 	"github.com/cloudflare/circl/sign/mldsa/mldsa65"
 	"github.com/dark-bio/crypto-go/cbor"
@@ -42,6 +43,14 @@ const (
 
 // OID is the ASN.1 object identifier for ML-DSA-65.
 var OID = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 3, 18}
+
+var (
+	ErrUnexpectedPemTag    = errors.New("mldsa: invalid PEM tag")
+	ErrUnexpectedAlgorithm = errors.New("mldsa: not an ML-DSA-65 key")
+	ErrMalformedKey        = errors.New("mldsa: malformed key")
+	ErrTrailingData        = errors.New("mldsa: trailing data in key encoding")
+	ErrInvalidSignature    = errors.New("mldsa: signature verification failed")
+)
 
 // SecretKey contains an ML-DSA-65 private key for creating digital signatures.
 type SecretKey struct {
@@ -72,14 +81,17 @@ func ParseSecretKeyDER(der []byte) (*SecretKey, error) {
 	// Parse the DER encoded container
 	info, err := asn1ext.ParsePKCS8PrivateKey(der)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, asn1ext.ErrTrailingData) {
+			return nil, ErrTrailingData
+		}
+		return nil, fmt.Errorf("%w: %v", ErrMalformedKey, err)
 	}
 	if info.Version != 0 {
-		return nil, errors.New("mldsa: unsupported version")
+		return nil, fmt.Errorf("%w: unsupported PKCS#8 version", ErrMalformedKey)
 	}
 	// Ensure the algorithm OID matches ML_DSA_65 (OID: 2.16.840.1.101.3.4.3.18)
 	if !info.Algorithm.Algorithm.Equal(OID) {
-		return nil, errors.New("mldsa: not an ML-DSA-65 private key")
+		return nil, ErrUnexpectedAlgorithm
 	}
 	// Wrap the private key in a SEQUENCE containing:
 	//   - OCTET STRING (32 bytes): seed
@@ -88,21 +100,21 @@ func ParseSecretKeyDER(der []byte) (*SecretKey, error) {
 
 	var inner cryptobyte.String
 	if !input.ReadASN1(&inner, cbasn1.SEQUENCE) || !input.Empty() {
-		return nil, errors.New("mldsa: invalid private key structure")
+		return nil, fmt.Errorf("%w: invalid private key structure", ErrMalformedKey)
 	}
 	var seedBytes cryptobyte.String
 	if !inner.ReadASN1(&seedBytes, cbasn1.OCTET_STRING) {
-		return nil, errors.New("mldsa: invalid seed encoding")
+		return nil, fmt.Errorf("%w: invalid seed encoding", ErrMalformedKey)
 	}
 	if len(seedBytes) != SecretKeySize {
-		return nil, errors.New("mldsa: seed must be 32 bytes")
+		return nil, fmt.Errorf("%w: seed must be 32 bytes", ErrMalformedKey)
 	}
 	var expandedBytes cryptobyte.String
 	if !inner.ReadASN1(&expandedBytes, cbasn1.OCTET_STRING) || !inner.Empty() {
-		return nil, errors.New("mldsa: invalid expanded key encoding")
+		return nil, fmt.Errorf("%w: invalid expanded key encoding", ErrMalformedKey)
 	}
 	if len(expandedBytes) != 4032 {
-		return nil, errors.New("mldsa: expanded key must be 4032 bytes")
+		return nil, fmt.Errorf("%w: expanded key must be 4032 bytes", ErrMalformedKey)
 	}
 	// Generate key from seed and validate it matches the expanded key in DER
 	var seed [SecretKeySize]byte
@@ -112,7 +124,7 @@ func ParseSecretKeyDER(der []byte) (*SecretKey, error) {
 	expanded, _ := key.MarshalBinary()
 	for i := range expanded {
 		if expanded[i] != expandedBytes[i] {
-			return nil, errors.New("mldsa: expanded key does not match seed")
+			return nil, fmt.Errorf("%w: expanded key does not match seed", ErrMalformedKey)
 		}
 	}
 	return &SecretKey{
@@ -139,7 +151,7 @@ func ParseSecretKeyPEM(s string) (*SecretKey, error) {
 		return nil, err
 	}
 	if kind != "PRIVATE KEY" {
-		return nil, errors.New("mldsa: invalid PEM type: " + kind)
+		return nil, fmt.Errorf("%w %s", ErrUnexpectedPemTag, kind)
 	}
 	// Parse the DER content
 	return ParseSecretKeyDER(blob)
@@ -234,17 +246,20 @@ func ParsePublicKey(b [PublicKeySize]byte) *PublicKey {
 func ParsePublicKeyDER(der []byte) (*PublicKey, error) {
 	info, err := asn1ext.ParseSubjectPublicKeyInfo(der)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, asn1ext.ErrTrailingData) {
+			return nil, ErrTrailingData
+		}
+		return nil, fmt.Errorf("%w: %v", ErrMalformedKey, err)
 	}
 	if !info.Algorithm.Algorithm.Equal(OID) {
-		return nil, errors.New("mldsa: not an ML-DSA-65 public key")
+		return nil, ErrUnexpectedAlgorithm
 	}
 	keyBytes := info.SubjectPublicKey.Bytes
 	if len(keyBytes) != PublicKeySize {
-		return nil, errors.New("mldsa: public key must be 1952 bytes")
+		return nil, fmt.Errorf("%w: public key must be 1952 bytes", ErrMalformedKey)
 	}
 	if info.SubjectPublicKey.BitLength != PublicKeySize*8 {
-		return nil, errors.New("mldsa: public key BIT STRING must be byte-aligned")
+		return nil, fmt.Errorf("%w: public key BIT STRING must be byte-aligned", ErrMalformedKey)
 	}
 	var b [PublicKeySize]byte
 	copy(b[:], keyBytes)
@@ -268,7 +283,7 @@ func ParsePublicKeyPEM(s string) (*PublicKey, error) {
 		return nil, err
 	}
 	if kind != "PUBLIC KEY" {
-		return nil, errors.New("mldsa: invalid PEM type: " + kind)
+		return nil, fmt.Errorf("%w %s", ErrUnexpectedPemTag, kind)
 	}
 	return ParsePublicKeyDER(blob)
 }
@@ -358,7 +373,7 @@ func (k *PublicKey) UnmarshalCBOR(dec *cbor.Decoder) error {
 // Verify verifies a digital signature with an optional context string.
 func (k *PublicKey) Verify(message []byte, ctx []byte, sig *Signature) error {
 	if !mldsa65.Verify(k.key, message, ctx, sig[:]) {
-		return errors.New("mldsa: signature verification failed")
+		return ErrInvalidSignature
 	}
 	return nil
 }

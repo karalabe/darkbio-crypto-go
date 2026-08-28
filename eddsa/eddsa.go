@@ -17,6 +17,7 @@ import (
 	"encoding/asn1"
 	"encoding/base64"
 	"errors"
+	"fmt"
 
 	"filippo.io/edwards25519"
 	"github.com/dark-bio/crypto-go/cbor"
@@ -44,6 +45,14 @@ const (
 // OID is the ASN.1 object identifier for Ed25519.
 var OID = asn1.ObjectIdentifier{1, 3, 101, 112}
 
+var (
+	ErrUnexpectedPemTag    = errors.New("eddsa: invalid PEM tag")
+	ErrUnexpectedAlgorithm = errors.New("eddsa: not an Ed25519 key")
+	ErrMalformedKey        = errors.New("eddsa: malformed key")
+	ErrTrailingData        = errors.New("eddsa: trailing data in key encoding")
+	ErrInvalidSignature    = errors.New("eddsa: signature verification failed")
+)
+
 // SecretKey contains an Ed25519 private key usable for signing.
 type SecretKey struct {
 	key ed25519.PrivateKey
@@ -69,18 +78,21 @@ func ParseSecretKey(seed [SecretKeySize]byte) *SecretKey {
 func ParseSecretKeyDER(der []byte) (*SecretKey, error) {
 	pkcs8, err := asn1ext.ParsePKCS8PrivateKey(der)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, asn1ext.ErrTrailingData) {
+			return nil, ErrTrailingData
+		}
+		return nil, fmt.Errorf("%w: %v", ErrMalformedKey, err)
 	}
 	if !pkcs8.Algorithm.Algorithm.Equal(OID) {
-		return nil, errors.New("eddsa: not an Ed25519 private key")
+		return nil, ErrUnexpectedAlgorithm
 	}
 	input := cryptobyte.String(pkcs8.PrivateKey)
 	var seed cryptobyte.String
 	if !input.ReadASN1(&seed, cbasn1.OCTET_STRING) || !input.Empty() {
-		return nil, errors.New("eddsa: invalid Ed25519 seed encoding")
+		return nil, fmt.Errorf("%w: invalid seed encoding", ErrMalformedKey)
 	}
 	if len(seed) != SecretKeySize {
-		return nil, errors.New("eddsa: invalid Ed25519 seed length")
+		return nil, fmt.Errorf("%w: invalid seed length", ErrMalformedKey)
 	}
 	return &SecretKey{key: ed25519.NewKeyFromSeed(seed)}, nil
 }
@@ -102,7 +114,7 @@ func ParseSecretKeyPEM(s string) (*SecretKey, error) {
 		return nil, err
 	}
 	if kind != "PRIVATE KEY" {
-		return nil, errors.New("eddsa: invalid PEM type: " + kind)
+		return nil, fmt.Errorf("%w %s", ErrUnexpectedPemTag, kind)
 	}
 	return ParseSecretKeyDER(blob)
 }
@@ -165,7 +177,7 @@ type PublicKey struct {
 // ParsePublicKey converts a 32-byte array into a public key.
 func ParsePublicKey(b [PublicKeySize]byte) (*PublicKey, error) {
 	if _, err := new(edwards25519.Point).SetBytes(b[:]); err != nil {
-		return nil, errors.New("eddsa: invalid Ed25519 public key")
+		return nil, fmt.Errorf("%w: invalid curve point", ErrMalformedKey)
 	}
 	return &PublicKey{
 		key: b[:],
@@ -186,16 +198,19 @@ func MustParsePublicKey(b [PublicKeySize]byte) *PublicKey {
 func ParsePublicKeyDER(der []byte) (*PublicKey, error) {
 	spki, err := asn1ext.ParseSubjectPublicKeyInfo(der)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, asn1ext.ErrTrailingData) {
+			return nil, ErrTrailingData
+		}
+		return nil, fmt.Errorf("%w: %v", ErrMalformedKey, err)
 	}
 	if !spki.Algorithm.Algorithm.Equal(OID) {
-		return nil, errors.New("eddsa: not an Ed25519 public key")
+		return nil, ErrUnexpectedAlgorithm
 	}
 	if spki.SubjectPublicKey.BitLength != PublicKeySize*8 {
-		return nil, errors.New("eddsa: invalid Ed25519 public key length")
+		return nil, fmt.Errorf("%w: invalid public key length", ErrMalformedKey)
 	}
 	if _, err := new(edwards25519.Point).SetBytes(spki.SubjectPublicKey.Bytes); err != nil {
-		return nil, errors.New("eddsa: invalid Ed25519 public key")
+		return nil, fmt.Errorf("%w: invalid curve point", ErrMalformedKey)
 	}
 	return &PublicKey{key: spki.SubjectPublicKey.Bytes}, nil
 }
@@ -217,7 +232,7 @@ func ParsePublicKeyPEM(s string) (*PublicKey, error) {
 		return nil, err
 	}
 	if kind != "PUBLIC KEY" {
-		return nil, errors.New("eddsa: invalid PEM type: " + kind)
+		return nil, fmt.Errorf("%w %s", ErrUnexpectedPemTag, kind)
 	}
 	return ParsePublicKeyDER(blob)
 }
@@ -308,7 +323,7 @@ func (k *PublicKey) UnmarshalCBOR(dec *cbor.Decoder) error {
 // Verify verifies a digital signature.
 func (k *PublicKey) Verify(message []byte, sig *Signature) error {
 	if !ed25519.Verify(k.key, message, sig[:]) {
-		return errors.New("eddsa: signature verification failed")
+		return ErrInvalidSignature
 	}
 	return nil
 }

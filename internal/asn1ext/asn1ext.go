@@ -16,6 +16,10 @@ import (
 	cbasn1 "golang.org/x/crypto/cryptobyte/asn1"
 )
 
+// ErrTrailingData is returned when a structure parses correctly but is
+// followed by additional unconsumed bytes.
+var ErrTrailingData = errors.New("asn1ext: trailing data")
+
 // PKCS8PrivateKey is the ASN.1 structure for PKCS#8 private keys.
 type PKCS8PrivateKey struct {
 	Version    int
@@ -31,8 +35,11 @@ func ParsePKCS8PrivateKey(der []byte) (*PKCS8PrivateKey, error) {
 
 	// Parse the outer SEQUENCE and ensure no trailing data
 	var inner cryptobyte.String
-	if !input.ReadASN1(&inner, cbasn1.SEQUENCE) || !input.Empty() {
+	if !input.ReadASN1(&inner, cbasn1.SEQUENCE) {
 		return nil, errors.New("asn1ext: invalid PKCS#8 structure")
+	}
+	if !input.Empty() {
+		return nil, ErrTrailingData
 	}
 	// Extract the version field (must be a single-byte integer)
 	var versionBytes cryptobyte.String
@@ -67,7 +74,7 @@ func ParsePKCS8PrivateKey(der []byte) (*PKCS8PrivateKey, error) {
 	}
 	// Reject if there's any trailing data
 	if !inner.Empty() {
-		return nil, errors.New("asn1ext: trailing data in private key")
+		return nil, ErrTrailingData
 	}
 	return &PKCS8PrivateKey{
 		Version: version,
@@ -91,8 +98,11 @@ func ParseSubjectPublicKeyInfo(der []byte) (*SubjectPublicKeyInfo, error) {
 
 	// Parse the outer SEQUENCE and ensure no trailing data
 	var inner cryptobyte.String
-	if !input.ReadASN1(&inner, cbasn1.SEQUENCE) || !input.Empty() {
+	if !input.ReadASN1(&inner, cbasn1.SEQUENCE) {
 		return nil, errors.New("asn1ext: invalid SPKI structure")
+	}
+	if !input.Empty() {
+		return nil, ErrTrailingData
 	}
 	// Parse the AlgorithmIdentifier SEQUENCE and extract the OID
 	var algSeq cryptobyte.String
@@ -105,8 +115,11 @@ func ParseSubjectPublicKeyInfo(der []byte) (*SubjectPublicKeyInfo, error) {
 	}
 	// Parse the BIT STRING containing the public key
 	var bitString cryptobyte.String
-	if !inner.ReadASN1(&bitString, cbasn1.BIT_STRING) || !inner.Empty() {
+	if !inner.ReadASN1(&bitString, cbasn1.BIT_STRING) {
 		return nil, errors.New("asn1ext: invalid public key encoding")
+	}
+	if !inner.Empty() {
+		return nil, ErrTrailingData
 	}
 	if len(bitString) < 1 {
 		return nil, errors.New("asn1ext: empty bit string")
